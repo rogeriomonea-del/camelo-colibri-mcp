@@ -31,7 +31,10 @@ pelo servidor; nenhum cliente vê a chave do aplicativo.
 | `colibri_escrever` | `POST/PUT/DELETE /api/...` | só com `COLIBRI_ALLOW_WRITES=true` |
 | `diagnostico` | — | quem está logado e se o token Colibri é obtido |
 
-As consultas são paginadas; `todas_paginas=true` consolida até `COLIBRI_MAX_PAGINAS`.
+As consultas são paginadas; `todas_paginas=true` consolida até `COLIBRI_MAX_PAGINAS` e
+devolve `paginacaoCompleta`/`ultimaPaginaLida`; uma página inesperada no meio interrompe
+com erro em vez de subestimar totais. Respostas grandes (ex.: comprovantes de um mês inteiro)
+podem exceder o limite do cliente — prefira intervalos curtos ou poucas páginas por chamada.
 A referência da API está em [`docs/colibri-api.md`](docs/colibri-api.md) e também é
 publicada como resource MCP `colibri://docs/api`.
 
@@ -49,19 +52,26 @@ Veja [`.env.example`](.env.example). Obrigatórias: `PUBLIC_URL`, `OWNER_EMAILS`
    - Tela de consentimento: tipo *Externo*, status **Em produção** (em *Teste* o refresh
      token do Google expira em 7 dias e o login teria de ser refeito toda semana).
      Escopos usados: `openid` e `userinfo.email` (não sensíveis; sem verificação).
-2. **Colibri Cloud** → *Usuários e lojas > Aplicativos registrados > Criar aplicativo*
-   → copiar a chave para `COLIBRI_CLIENT_ID`.
+2. **Colibri Cloud** (portal `https://<tenant>.colibricloud.com`) → *Usuários e lojas > Aplicativos
+   registrados > Criar aplicativo* → copiar a chave para `COLIBRI_CLIENT_ID`.
+   A API atual responde em `https://cloud.colibricloud.com` (padrão de `COLIBRI_BASE_URL`); o host
+   `cloud.ncrcolibri.com.br` da documentação não existe mais no DNS.
 
 ## Deploy no Coolify (VPS Hostinger)
 
 1. *New Resource* → *Public Repository* → URL deste repositório → *Build Pack: Dockerfile*.
-2. *Domains*: `https://colibri.celestiaflights.com` (porta exposta 8000). O Coolify
-   emite o certificado Let's Encrypt automaticamente.
-3. *Environment Variables*: as de `.env.example` (os segredos colados pelo dono).
-4. *Persistent Storage*: volume montado em `/data` (registros OAuth dos clientes; sem
-   ele, cada redeploy obriga a reautenticar todos os clientes).
+2. *Ports Exposes*: `8000`. *Domains*: `https://colibri.celestiaflights.com` — o Coolify
+   emite o certificado Let's Encrypt automaticamente (porta 80/443 abertas no VPS).
+3. *Environment Variables*: as de `.env.example` (os segredos colados pelo dono). Nunca
+   defina `MCP_AUTH_DISABLED` no deploy: com `PUBLIC_URL` https o servidor se recusa a subir.
+4. *Persistent Storage* → **Volume Mount** (não *Directory Mount*) com destino `/data`:
+   guarda os registros OAuth dos clientes e os tokens upstream (criptografados). Sem
+   ele, cada redeploy obriga a reautenticar todos os clientes; com *Directory Mount* o
+   diretório vem do host como root e o processo (uid 10001) não consegue gravar.
 5. *Deploy*. Teste: `https://colibri.celestiaflights.com/healthz` → `{"status":"ok"}`
    e `https://colibri.celestiaflights.com/.well-known/oauth-authorization-server`.
+6. Primeiro uso: conecte um cliente, faça o login Google e chame `diagnostico` — ele
+   confirma a conta autenticada e se o token do Colibri foi obtido com a chave configurada.
 
 ## Conectar os clientes
 

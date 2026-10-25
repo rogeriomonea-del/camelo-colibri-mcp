@@ -19,7 +19,10 @@ from typing import Any
 
 import httpx
 
-DEFAULT_BASE_URL = "https://cloud.ncrcolibri.com.br"
+# A documentação (2019) usa https://cloud.ncrcolibri.com.br, mas esse domínio não existe
+# mais no DNS (NXDOMAIN em 2026-10-25). O serviço atual responde em cloud.colibricloud.com
+# com o mesmo contrato (/oauth/authenticate -> 401 "client_id not found" sem chave).
+DEFAULT_BASE_URL = "https://cloud.colibricloud.com"
 
 # Margem de segurança sobre a validade declarada (5 min) para nunca enviar
 # um token prestes a expirar.
@@ -101,9 +104,16 @@ class ColibriClient:
         await self._http.aclose()
 
     # ------------------------------------------------------------------ token
-    async def get_token(self, force: bool = False) -> str:
+    async def get_token(self, force: bool = False, stale: str | None = None) -> str:
+        """Devolve um token válido.
+
+        force=True renova; se `stale` for informado, só renova quando ele ainda é o
+        token atual (evita que N requisições com 401 simultâneos se invalidem).
+        """
         async with self._token_lock:
             now = time.monotonic()
+            if stale is not None and self._token != stale:
+                force = False
             if not force and self._token and now < self._token_expires_at:
                 return self._token
             try:
@@ -130,12 +140,14 @@ class ColibriClient:
                 raise ColibriError(
                     "Resposta de autenticação Colibri sem access_token", body=response.text[:500]
                 )
-            # expires_in vem em MINUTOS ("5") na documentação.
+            # expires_in vem em MINUTOS ("5") na documentação; se a API passar a
+            # devolver segundos (valor > 60), interpreta como segundos.
             try:
-                expires_minutes = float(data.get("expires_in", 5))
+                expires_value = float(data.get("expires_in", 5))
             except (TypeError, ValueError):
-                expires_minutes = 5.0
-            ttl = max(expires_minutes * 60 - TOKEN_SAFETY_MARGIN_SECONDS, 30)
+                expires_value = 5.0
+            expires_seconds = expires_value if expires_value > 60 else expires_value * 60
+            ttl = max(expires_seconds - TOKEN_SAFETY_MARGIN_SECONDS, 30)
             self._token = token
             self._token_expires_at = time.monotonic() + ttl
             return token
@@ -157,7 +169,7 @@ class ColibriClient:
         response = await self._send(method, path, params, body, token)
         if response.status_code == 401:
             # Token pode ter sido invalidado antes do previsto: renova e tenta 1x.
-            token = await self.get_token(force=True)
+            token = await self.get_token(force=True, stale=token)
             response = await self._send(method, path, params, body, token)
         if response.status_code >= 400:
             reason = HTTP_STATUS_REASONS.get(response.status_code, "erro")
@@ -201,24 +213,37 @@ class ColibriClient:
         """
         pagina = int(query.get("pagina") or 1)
         first = await self.request("GET", path, {**query, "pagina": pagina})
-        if not todas_paginas or not isinstance(first, dict):
+        if not todas_paginas:
             return first
-        data = list(first.get("data") or [])
-        total_paginas = int(first.get("totalPaginas") or 1)
+        data = list(self._page_items(first, pagina, path))
+        try:
+            total_paginas = int(first.get("totalPaginas") or 1)
+        except (TypeError, ValueError) as exc:
+            raise ColibriError(f"Resposta sem totalPaginas válido em {path}") from exc
         paginas_lidas = 1
-        proxima = first.get("proximaPagina")
-        while proxima and paginas_lidas < max_paginas and pagina < total_paginas:
-            pagina = int(proxima)
-            page = await self.request("GET", path, {**query, "pagina": pagina})
-            if not isinstance(page, dict):
-                break
-            data.extend(page.get("data") or [])
+        ultima_lida = pagina
+        while ultima_lida < total_paginas and paginas_lidas < max_paginas:
+            ultima_lida += 1
+            page = await self.request("GET", path, {**query, "pagina": ultima_lida})
+            data.extend(self._page_items(page, ultima_lida, path))
             paginas_lidas += 1
-            proxima = page.get("proximaPagina")
         return {
             "totalItens": first.get("totalItens"),
             "totalPaginas": total_paginas,
+            "paginaInicial": pagina,
             "paginasLidas": paginas_lidas,
-            "paginacaoCompleta": not proxima or pagina >= total_paginas,
+            "ultimaPaginaLida": ultima_lida,
+            "paginacaoCompleta": ultima_lida >= total_paginas,
             "data": data,
         }
+
+    @staticmethod
+    def _page_items(page: Any, numero: int, path: str) -> list[Any]:
+        """Extrai `data` de uma página; resposta vazia/não paginada é erro, não silêncio."""
+        if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+            raise ColibriError(
+                f"Página {numero} de {path} veio sem a lista 'data' (resposta inesperada); "
+                "consolidação interrompida para não subestimar os totais.",
+                body=str(page)[:300],
+            )
+        return page["data"]

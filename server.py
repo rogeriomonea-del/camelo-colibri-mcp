@@ -14,7 +14,7 @@ Variáveis de ambiente (ver .env.example):
   GOOGLE_CLIENT_ID       OAuth client (Web application) do Google Cloud
   GOOGLE_CLIENT_SECRET   segredo do OAuth client
   COLIBRI_CLIENT_ID      chave do aplicativo registrado no Colibri Cloud
-  COLIBRI_BASE_URL       (opcional) padrão https://cloud.ncrcolibri.com.br
+  COLIBRI_BASE_URL       (opcional) padrão https://cloud.colibricloud.com
   COLIBRI_ALLOW_WRITES   (opcional) "true" habilita POST/PUT/DELETE no catálogo
   COLIBRI_MAX_PAGINAS    (opcional) limite de páginas por consulta com todas_paginas (padrão 50)
   MCP_STATIC_TOKEN       (opcional) bearer fixo para clientes sem OAuth (n8n, scripts)
@@ -50,6 +50,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("camelo-colibri-mcp")
+# httpx/httpcore registram a URL completa de cada requisição em INFO — e a chave do
+# Colibri viaja na query string de /oauth/authenticate. Nunca abaixo de WARNING.
+for _noisy in ("httpx", "httpcore", "httpx2"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -97,6 +101,10 @@ class OwnerOnlyVerifier(TokenVerifier):
         if access is None:
             return None
         email = str(access.claims.get("email") or "").strip().lower()
+        verified = access.claims.get("email_verified")
+        if verified is not None and str(verified).lower() not in {"true", "1"}:
+            logger.warning("Acesso negado: e-mail Google não verificado (%s)", email or "sem e-mail")
+            return None
         if email not in self._owner_emails:
             logger.warning("Acesso negado: conta Google não autorizada (%s)", email or "sem e-mail")
             return None
@@ -113,7 +121,9 @@ class CameloGoogleAuth(GoogleProvider):
         self._static_identity = sorted(owner_emails)[0] if owner_emails else "static-token"
 
     async def load_access_token(self, token: str) -> AccessToken | None:  # type: ignore[override]
-        if self._static_token and secrets.compare_digest(token, self._static_token):
+        if self._static_token and secrets.compare_digest(
+            token.encode("utf-8"), self._static_token.encode("utf-8")
+        ):
             return AccessToken(
                 token=token,
                 client_id="static-token",
@@ -125,33 +135,52 @@ class CameloGoogleAuth(GoogleProvider):
         return await super().load_access_token(token)
 
 
-def build_auth() -> CameloGoogleAuth | None:
-    """Monta o provedor de autenticação; None só quando MCP_AUTH_DISABLED=true (testes)."""
-    if _env_bool("MCP_AUTH_DISABLED", False):
+def build_auth(
+    *,
+    public_url: str | None = None,
+    owner_emails: set[str] | None = None,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    static_token: str | None = None,
+    jwt_key: str | None = None,
+) -> CameloGoogleAuth | None:
+    """Monta o provedor de autenticação; None só quando MCP_AUTH_DISABLED=true (testes).
+
+    Os parâmetros existem para testes; em produção tudo vem das variáveis de ambiente.
+    """
+    public_url = (public_url or PUBLIC_URL).rstrip("/")
+    if _env_bool("MCP_AUTH_DISABLED", False) and client_id is None:
+        if public_url.startswith("https://"):
+            raise SystemExit(
+                "MCP_AUTH_DISABLED=true com PUBLIC_URL https — recusando subir um servidor "
+                "público sem autenticação. Remova a variável do deploy."
+            )
         logger.warning("MCP_AUTH_DISABLED=true — servidor SEM autenticação (apenas testes locais)")
         return None
-    client_id = _env("GOOGLE_CLIENT_ID")
-    client_secret = _env("GOOGLE_CLIENT_SECRET")
+    owner_emails = owner_emails if owner_emails is not None else OWNER_EMAILS
+    client_id = client_id or _env("GOOGLE_CLIENT_ID")
+    client_secret = client_secret or _env("GOOGLE_CLIENT_SECRET")
+    static_token = static_token if static_token is not None else MCP_STATIC_TOKEN
+    jwt_key = jwt_key or _env("JWT_SIGNING_KEY")
     missing = [
         name
         for name, value in {
             "GOOGLE_CLIENT_ID": client_id,
             "GOOGLE_CLIENT_SECRET": client_secret,
-            "OWNER_EMAILS": ",".join(sorted(OWNER_EMAILS)) or None,
+            "OWNER_EMAILS": ",".join(sorted(owner_emails)) or None,
         }.items()
         if not value
     ]
     if missing:
         raise SystemExit(f"Variáveis obrigatórias ausentes: {', '.join(missing)}")
-    if not PUBLIC_URL.startswith("https://"):
-        logger.warning("PUBLIC_URL sem https (%s): só aceitável em testes locais", PUBLIC_URL)
-    jwt_key = _env("JWT_SIGNING_KEY")
+    if not public_url.startswith("https://"):
+        logger.warning("PUBLIC_URL sem https (%s): só aceitável em testes locais", public_url)
     return CameloGoogleAuth(
-        owner_emails=OWNER_EMAILS,
-        static_token=MCP_STATIC_TOKEN,
+        owner_emails=owner_emails,
+        static_token=static_token,
         client_id=client_id,
         client_secret=client_secret,
-        base_url=PUBLIC_URL,
+        base_url=public_url,
         required_scopes=["openid", "https://www.googleapis.com/auth/userinfo.email"],
         # Evita consultar o tokeninfo do Google a cada chamada de ferramenta.
         cache_ttl_seconds=300,
@@ -176,11 +205,19 @@ Uso recomendado:
 Escrita no catálogo fica desabilitada por padrão (COLIBRI_ALLOW_WRITES).
 """
 
+try:
+    _auth = build_auth()
+except PermissionError as exc:
+    raise SystemExit(
+        f"Sem permissão para gravar o armazenamento OAuth ({exc}). No Coolify use um "
+        "'Volume Mount' em /data (não 'Directory Mount'), ou dê permissão ao uid 10001."
+    ) from exc
+
 mcp = FastMCP(
     name="Camelo Colibri",
     instructions=INSTRUCTIONS,
     version=__version__,
-    auth=build_auth(),
+    auth=_auth,
 )
 
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}

@@ -2,7 +2,10 @@
 
 Fonte: coleção Postman pública "Colibri Cloud API" (NCR Colibri),
 https://documenter.getpostman.com/view/31362201/2s9YeHbBMM (74 requisições,
-extraídas em 2026-10-25). Base URL dos exemplos: `https://cloud.ncrcolibri.com.br`.
+extraídas em 2026-10-25). Base URL dos exemplos: `https://cloud.ncrcolibri.com.br` — **esse domínio
+não existe mais no DNS (NXDOMAIN em 2026-10-25)**; o serviço atual responde com o mesmo contrato em
+`https://cloud.colibricloud.com` (`/oauth/authenticate` sem chave → 401 `client_id not found`;
+`/api/v1/...` sem token → 401 `Invalid token`). O portal do cliente fica em `<tenant>.colibricloud.com`.
 Formato de entrada/saída: JSON (`Content-Type: application/json; charset=utf-8` em POST/PUT).
 
 ## Autenticação

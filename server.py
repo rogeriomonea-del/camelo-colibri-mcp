@@ -39,7 +39,7 @@ from fastmcp.server.auth import AccessToken, TokenVerifier
 from fastmcp.server.auth.providers.google import GoogleProvider
 from fastmcp.server.dependencies import get_access_token
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 
 from colibri_client import DEFAULT_BASE_URL, ColibriClient, ColibriError
 
@@ -533,14 +533,51 @@ async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "camelo-colibri-mcp", "version": __version__})
 
 
+_PAGE_STYLE = (
+    "<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1rem;"
+    "line-height:1.5;color:#222}code{background:#f3f3f3;padding:.1em .3em}</style>"
+)
+
+
 @mcp.custom_route("/", methods=["GET"], include_in_schema=False)
-async def index(request: Request) -> JSONResponse:
-    return JSONResponse(
-        {
-            "service": "camelo-colibri-mcp",
-            "mcp_url": f"{PUBLIC_URL}{MCP_PATH}",
-            "auth": "google-oauth (restrito)",
-        }
+async def index(request: Request) -> HTMLResponse:
+    return HTMLResponse(
+        "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>"
+        f"<title>Camelo Colibri MCP</title>{_PAGE_STYLE}</head><body>"
+        "<h1>Camelo Colibri MCP</h1>"
+        "<p>Servidor MCP privado da Pizzaria Camelo que integra a API Colibri Cloud (NCR) "
+        "aos assistentes do proprietário (Claude, ChatGPT, Codex). Acesso restrito por login Google.</p>"
+        f"<p>Endpoint MCP: <code>{PUBLIC_URL}{MCP_PATH}</code></p>"
+        "<p><a href='/privacidade'>Política de privacidade</a> · <a href='/termos'>Termos de uso</a></p>"
+        "</body></html>"
+    )
+
+
+@mcp.custom_route("/privacidade", methods=["GET"], include_in_schema=False)
+async def privacidade(request: Request) -> HTMLResponse:
+    return HTMLResponse(
+        "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>"
+        f"<title>Política de privacidade</title>{_PAGE_STYLE}</head><body>"
+        "<h1>Política de privacidade</h1>"
+        "<p>Este serviço é de uso pessoal e restrito ao proprietário. O login Google é usado apenas para "
+        "confirmar a identidade (nome e e-mail da conta) e autorizar o acesso. Nenhum dado da conta Google "
+        "é compartilhado com terceiros nem usado para qualquer outra finalidade.</p>"
+        "<p>Os tokens de acesso ficam armazenados de forma criptografada no servidor e podem ser revogados a "
+        "qualquer momento em <a href='https://myaccount.google.com/permissions'>myaccount.google.com/permissions</a>.</p>"
+        "<p>Contato: o endereço de suporte informado na tela de consentimento do Google.</p>"
+        "</body></html>"
+    )
+
+
+@mcp.custom_route("/termos", methods=["GET"], include_in_schema=False)
+async def termos(request: Request) -> HTMLResponse:
+    return HTMLResponse(
+        "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>"
+        f"<title>Termos de uso</title>{_PAGE_STYLE}</head><body>"
+        "<h1>Termos de uso</h1>"
+        "<p>Serviço privado, sem garantia, destinado exclusivamente ao proprietário e às contas que ele "
+        "autorizar. Qualquer outro acesso é negado.</p>"
+        "</body></html>"
     )
 
 
